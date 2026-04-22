@@ -1,6 +1,5 @@
 streamlit
 pandas
-opencv-python
 pillow
 easyocr
 numpy
