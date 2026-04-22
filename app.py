@@ -1,10 +1,9 @@
 import streamlit as st
 import pandas as pd
-import cv2
-import numpy as np
 import re
 import easyocr
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
+import numpy as np
 
 # Khởi tạo EasyOCR
 @st.cache_resource
@@ -13,20 +12,23 @@ def load_ocr():
 
 reader = load_ocr()
 
-# Tiền xử lý ảnh dim
+# Tiền xử lý ảnh dim (không dùng OpenCV)
 def preprocess_image(image):
-    img = np.array(image)
-    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    # Tăng contrast
+    enhancer = ImageEnhance.Contrast(image)
+    image = enhancer.enhance(2.0)
     
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-    enhanced = clahe.apply(gray)
+    # Tăng độ sắc nét
+    enhancer = ImageEnhance.Sharpness(image)
+    image = enhancer.enhance(2.0)
     
-    denoised = cv2.fastNlMeansDenoising(enhanced, h=30)
+    # Chuyển sang grayscale
+    image = image.convert('L')
     
-    kernel_sharpen = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
-    sharpened = cv2.filter2D(denoised, -1, kernel_sharpen)
+    # Lọc giảm nhiễu
+    image = image.filter(ImageFilter.MedianFilter(size=3))
     
-    return sharpened
+    return image
 
 # Xử lý OCR và trích xuất số
 def extract_dimensions_from_image(image):
@@ -34,7 +36,7 @@ def extract_dimensions_from_image(image):
     
     # Lưu tạm
     temp_path = "temp_processed.png"
-    cv2.imwrite(temp_path, processed)
+    processed.save(temp_path)
     
     # OCR bằng EasyOCR
     result = reader.readtext(temp_path)
