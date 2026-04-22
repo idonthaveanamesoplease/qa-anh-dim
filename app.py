@@ -3,31 +3,26 @@ import pandas as pd
 import cv2
 import numpy as np
 import re
-from paddleocr import PaddleOCR
+import easyocr
 from PIL import Image
-import io
 
-# Khởi tạo OCR một lần
+# Khởi tạo EasyOCR
 @st.cache_resource
 def load_ocr():
-    return PaddleOCR(use_angle_cls=True, lang='en', show_log=False)
+    return easyocr.Reader(['en'])
 
-ocr = load_ocr()
+reader = load_ocr()
 
 # Tiền xử lý ảnh dim
 def preprocess_image(image):
-    # Chuyển PIL sang OpenCV
     img = np.array(image)
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
     
-    # CLAHE tăng contrast
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
     enhanced = clahe.apply(gray)
     
-    # Denoise
     denoised = cv2.fastNlMeansDenoising(enhanced, h=30)
     
-    # Sharpening
     kernel_sharpen = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
     sharpened = cv2.filter2D(denoised, -1, kernel_sharpen)
     
@@ -41,18 +36,18 @@ def extract_dimensions_from_image(image):
     temp_path = "temp_processed.png"
     cv2.imwrite(temp_path, processed)
     
-    # OCR
-    result = ocr.ocr(temp_path, cls=True)
+    # OCR bằng EasyOCR
+    result = reader.readtext(temp_path)
     
     # Gom text
     all_text = []
-    for line in result[0]:
-        text = line[1][0]
+    for detection in result:
+        text = detection[1]
         all_text.append(text)
     
     full_text = " ".join(all_text)
     
-    # Trích xuất các số (kèm đơn vị inch)
+    # Trích xuất số
     patterns = [
         r'(\d+(?:\.\d+)?)\s*["\']',
         r'(\d+(?:\.\d+)?)\s*in',
@@ -73,23 +68,19 @@ def extract_dimensions_from_image(image):
         "formatted": " x ".join([f"{n}\"" for n in unique_numbers[:3]])
     }
 
-# Parse Excel dimension
 def parse_excel_dimension(dim_str):
     if pd.isna(dim_str):
         return []
-    
     dim_str = str(dim_str)
     numbers = re.findall(r'(\d+(?:\.\d+)?)', dim_str)
     return numbers
 
-# Tìm hàng trong Excel dựa vào filename
 def find_row_by_filename(df, filename):
     for idx, row in df.iterrows():
         if pd.notna(row.iloc[1]) and filename.lower() in str(row.iloc[1]).lower():
             return idx, row
     return None, None
 
-# So sánh số
 def compare_numbers(excel_nums, ocr_nums):
     if not excel_nums or not ocr_nums:
         return False, "Missing data"
@@ -109,7 +100,7 @@ def compare_numbers(excel_nums, ocr_nums):
     
     return all_pass, " | ".join(results)
 
-# Giao diện Streamlit
+# Giao diện
 st.set_page_config(layout="wide", page_title="QA Ảnh Dim - Furniture")
 st.title("🛋️ QA Ảnh Dim - Kiểm tra thông số nội thất")
 
