@@ -8,14 +8,18 @@ import numpy as np
 st.set_page_config(layout="wide")
 st.title("QA Ảnh Dim")
 
-# Load OCR
 @st.cache_resource
 def load_ocr():
-    return easyocr.Reader(['en'])
+    # Chỉ dùng CPU, không tải GPU
+    return easyocr.Reader(['en'], gpu=False)
 
-reader = load_ocr()
+try:
+    reader = load_ocr()
+    st.success("✅ OCR đã sẵn sàng")
+except Exception as e:
+    st.error(f"Lỗi tải OCR: {e}")
+    st.stop()
 
-# Upload
 excel_file = st.sidebar.file_uploader("Excel", type=["xlsx", "xls"])
 image_files = st.sidebar.file_uploader("Ảnh", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
 
@@ -25,16 +29,15 @@ if excel_file and image_files:
     
     for img_file in image_files:
         st.subheader(img_file.name)
-        
-        # OCR
         img = Image.open(img_file)
-        result = reader.readtext(np.array(img))
         
-        numbers = []
-        for (bbox, text, conf) in result:
-            found = re.findall(r'\d+(?:\.\d+)?', text)
-            if found and conf > 0.5:
-                numbers.extend(found)
+        with st.spinner("Đang đọc ảnh..."):
+            result = reader.readtext(np.array(img))
+            numbers = []
+            for (bbox, text, conf) in result:
+                found = re.findall(r'\d+(?:\.\d+)?', text)
+                if found and conf > 0.5:
+                    numbers.extend(found)
         
         st.write(f"Số tìm thấy: {numbers}")
         st.image(img, width=300)
