@@ -62,9 +62,18 @@ def parse_excel_dimension(dim_str):
     return re.findall(r'(\d+(?:\.\d+)?)', str(dim_str))
 
 def find_row_by_filename(df, filename):
+    """Tìm hàng trong Excel, tự động bỏ đuôi .jpg, .jpeg, .png khi so sánh"""
+    # Bỏ đuôi ảnh
+    filename_clean = re.sub(r'\.(jpg|jpeg|png)$', '', filename.lower())
+    
     for idx, row in df.iterrows():
-        if pd.notna(row.iloc[1]) and filename.lower() in str(row.iloc[1]).lower():
-            return idx, row
+        if pd.notna(row.iloc[1]):
+            excel_name = str(row.iloc[1]).lower()
+            # So sánh theo nhiều cách
+            if (filename_clean == excel_name or 
+                filename_clean in excel_name or 
+                excel_name in filename_clean):
+                return idx, row
     return None, None
 
 def compare_numbers(excel_nums, ocr_nums):
@@ -138,7 +147,7 @@ if excel_file and image_files:
                     "OCR số": str(ocr_result['numbers']),
                     "OCR text": ocr_result['raw_text']
                 })
-                status.update(label=f"✅ Xong: {image_file.name} - {result_status}", state="complete")
+                status.update(label=f"✅ Xong: {filename} - {result_status}", state="complete")
             else:
                 results_list.append({
                     "STT": idx+1,
@@ -150,7 +159,7 @@ if excel_file and image_files:
                     "OCR số": "N/A",
                     "OCR text": "N/A"
                 })
-                status.update(label=f"❌ Không tìm thấy: {image_file.name}", state="error")
+                status.update(label=f"❌ Không tìm thấy: {filename}", state="error")
     
     # Hiển thị kết quả tổng hợp
     st.subheader("📊 Bảng kết quả tổng hợp")
@@ -178,4 +187,4 @@ else:
     st.info("👈 Vui lòng upload file Excel và ảnh dim ở sidebar để bắt đầu QA")
 
 st.markdown("---")
-st.caption("QA Ảnh Dim v1.0 - Hỗ trợ nhiều ảnh")
+st.caption("QA Ảnh Dim v1.0 - Hỗ trợ nhiều ảnh, tự động bỏ đuôi .jpg")
