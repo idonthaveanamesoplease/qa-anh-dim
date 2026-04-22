@@ -1,10 +1,15 @@
 import streamlit as st
 import pandas as pd
 import re
+import base64
 import easyocr
 from PIL import Image, ImageEnhance, ImageFilter
-import tempfile
-import os
+import numpy as np
+import io
+
+# Cấu hình trang
+st.set_page_config(layout="wide", page_title="QA Ảnh Dim - Furniture")
+st.title("🛋️ QA Ảnh Dim - Kiểm tra thông số nội thất")
 
 # Khởi tạo EasyOCR
 @st.cache_resource
@@ -13,178 +18,131 @@ def load_ocr():
 
 reader = load_ocr()
 
-# Tiền xử lý ảnh dim
-def preprocess_image(image):
-    enhancer = ImageEnhance.Contrast(image)
-    image = enhancer.enhance(2.0)
-    enhancer = ImageEnhance.Sharpness(image)
-    image = enhancer.enhance(2.0)
-    image = image.convert('L')
-    image = image.filter(ImageFilter.MedianFilter(size=3))
-    return image
+def normalize_name(x):
+    x = x.lower()
+    x = re.sub(r'\.jpg|\.png|\.jpeg', '', x)
+    x = re.sub(r'[_\-]', ' ', x)
+    x = re.sub(r'[^a-z0-9 ]', '', x)
+    x = re.sub(r'\s+', ' ', x)
+    return x.strip()
 
-# Xử lý OCR
-def extract_dimensions_from_image(image):
-    processed = preprocess_image(image)
-    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
-        temp_path = tmp.name
-        processed.save(temp_path)
-    
-    result = reader.readtext(temp_path)
-    os.unlink(temp_path)
-    
-    all_text = [detection[1] for detection in result]
-    full_text = " ".join(all_text)
-    
-    patterns = [
-        r'(\d+(?:\.\d+)?)\s*["\']',
-        r'(\d+(?:\.\d+)?)\s*in',
-        r'(\d+(?:\.\d+)?)\s*"',
-        r'(\d+(?:\.\d+)?)\s*(?:W|H|D|x)'
-    ]
-    
-    numbers = []
-    for pattern in patterns:
-        matches = re.findall(pattern, full_text, re.IGNORECASE)
-        numbers.extend(matches)
-    
-    unique_numbers = list(dict.fromkeys(numbers))
-    
-    return {
-        "raw_text": full_text[:200],
-        "numbers": unique_numbers,
-        "formatted": " x ".join([f"{n}\"" for n in unique_numbers[:3]])
-    }
+def preprocess(img):
+    img = img.convert("L")
+    img = ImageEnhance.Contrast(img).enhance(3)
+    img = ImageEnhance.Sharpness(img).enhance(2)
+    img = img.filter(ImageFilter.MedianFilter())
+    return img
 
-def parse_excel_dimension(dim_str):
-    if pd.isna(dim_str):
-        return []
-    return re.findall(r'(\d+(?:\.\d+)?)', str(dim_str))
+def run_ocr_multi(image):
+    scales = [1, 1.5, 2]
+    nums = []
+    for s in scales:
+        resized = image.resize((int(image.width*s), int(image.height*s)))
+        results = reader.readtext(np.array(resized))
+        for (bbox, text, conf) in results:
+            found = re.findall(r'(\d+(?:\.\d+)?)', text)
+            if found:
+                x = bbox[0][0] / s
+                y = bbox[0][1] / s
+                for f in found:
+                    nums.append({"value": f, "x": x, "y": y})
+    unique = []
+    seen = set()
+    for n in nums:
+        key = (round(float(n["value"]),2), round(n["x"]/10), round(n["y"]/10))
+        if key not in seen:
+            seen.add(key)
+            unique.append(n)
+    return unique
 
-def find_row_by_filename(df, filename):
-    """Tìm hàng trong Excel, tự động bỏ đuôi .jpg, .jpeg, .png khi so sánh"""
-    # Bỏ đuôi ảnh
-    filename_clean = re.sub(r'\.(jpg|jpeg|png)$', '', filename.lower())
-    
-    for idx, row in df.iterrows():
-        if pd.notna(row.iloc[1]):
-            excel_name = str(row.iloc[1]).lower()
-            # So sánh theo nhiều cách
-            if (filename_clean == excel_name or 
-                filename_clean in excel_name or 
-                excel_name in filename_clean):
-                return idx, row
-    return None, None
+def classify_dims(ocr):
+    if len(ocr) < 3:
+        return {}
+    result = {}
+    top = min(ocr, key=lambda x: x["y"])
+    result["Height"] = top["value"]
+    remain = [n for n in ocr if n != top]
+    if len(ocr) >= 4:
+        smallest = min(remain, key=lambda x: float(x["value"]))
+        result["Leg Height"] = smallest["value"]
+        remain = [n for n in remain if n != smallest]
+    if len(remain) >= 2:
+        remain = sorted(remain, key=lambda x: float(x["value"]), reverse=True)
+        result["Width"] = remain[0]["value"]
+        result["Depth"] = remain[1]["value"]
+    return result
 
-def compare_numbers(excel_nums, ocr_nums):
-    if not excel_nums or not ocr_nums:
-        return False, "Missing data"
-    all_pass = True
-    results = []
-    for i, excel_num in enumerate(excel_nums):
-        if i < len(ocr_nums):
-            if excel_num == ocr_nums[i]:
-                results.append(f"{excel_num} == {ocr_nums[i]} ✓")
-            else:
-                results.append(f"{excel_num} != {ocr_nums[i]} ✗")
-                all_pass = False
-        else:
-            results.append(f"{excel_num} not found ✗")
-            all_pass = False
-    return all_pass, " | ".join(results)
-
-# Giao diện
-st.set_page_config(layout="wide", page_title="QA Ảnh Dim - Furniture")
-st.title("🛋️ QA Ảnh Dim - Kiểm tra thông số nội thất")
-
+# Sidebar upload
 with st.sidebar:
     st.header("📁 Upload dữ liệu")
-    excel_file = st.file_uploader("File Excel (data gốc)", type=["xlsx", "xls"])
-    image_files = st.file_uploader("Ảnh dim cần QA (chọn nhiều ảnh)", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
+    excel_file = st.file_uploader("File Excel", type=["xlsx", "xls"])
+    image_files = st.file_uploader("Ảnh dim (chọn nhiều)", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
     
     if excel_file and image_files:
         st.success(f"✅ Đã upload {len(image_files)} ảnh")
-        df = pd.read_excel(excel_file, engine='openpyxl')
-        st.write("**Preview Excel:**")
-        st.dataframe(df.head(3))
 
+# Xử lý chính
 if excel_file and image_files:
-    results_list = []
+    df = pd.read_excel(excel_file)
+    df.columns = [c.lower() for c in df.columns]
     
-    for idx, image_file in enumerate(image_files):
-        with st.status(f"Đang xử lý ảnh {idx+1}/{len(image_files)}: {image_file.name}") as status:
-            image = Image.open(image_file)
-            filename = image_file.name
+    for img_file in image_files:
+        img = Image.open(img_file)
+        img_processed = preprocess(img)
+        
+        # Tìm row trong Excel
+        img_name = img_file.name
+        clean_img = normalize_name(img_name)
+        
+        row = None
+        for _, r in df.iterrows():
+            excel_val = normalize_name(str(r.iloc[1]))
+            if clean_img in excel_val or excel_val in clean_img:
+                row = r
+                break
+        
+        if row is None:
+            st.error(f"❌ Không tìm thấy: {img_name}")
+            continue
+        
+        # Lấy giá trị Excel
+        excel_vals = {
+            "Width": row.get("width", "N/A"),
+            "Depth": row.get("depth", "N/A"),
+            "Height": row.get("height", "N/A"),
+            "Leg Height": row.get("leg height", "N/A")
+        }
+        
+        # OCR
+        ocr_raw = run_ocr_multi(img_processed)
+        size_val = row.get("size")
+        if pd.notna(size_val):
+            size_num = re.sub(r'[^0-9.]', '', str(size_val))
+            ocr_raw = [n for n in ocr_raw if n["value"] != size_num]
+        
+        ocr = classify_dims(ocr_raw)
+        
+        # Hiển thị kết quả
+        col1, col2 = st.columns([1, 1.5])
+        with col1:
+            st.image(img, use_container_width=True)
+            if pd.notna(size_val):
+                st.caption(f"📏 Size: {size_val}")
+        
+        with col2:
+            st.subheader(f"📊 {img_name}")
             
-            idx_row, row = find_row_by_filename(df, filename)
+            # Tạo bảng
+            data = []
+            for k, v_ex in excel_vals.items():
+                if pd.isna(v_ex):
+                    continue
+                v_ai = f'{ocr.get(k, "N/A")}"'
+                n_ex = re.sub(r'[^0-9.]', '', str(v_ex))
+                n_ai = re.sub(r'[^0-9.]', '', v_ai)
+                status = "✅" if n_ex == n_ai else "❌"
+                data.append({"Thông số": k, "Excel": v_ex, "AI Đọc": v_ai, "KQ": status})
             
-            if idx_row is not None:
-                product_name = row.iloc[0] if pd.notna(row.iloc[0]) else "N/A"
-                dim_columns = df.columns[3:]
-                excel_dimensions = {}
-                for col in dim_columns:
-                    if pd.notna(row[col]):
-                        excel_dimensions[col] = str(row[col])
-                
-                ocr_result = extract_dimensions_from_image(image)
-                
-                first_dim_name = list(excel_dimensions.keys())[0] if excel_dimensions else None
-                if first_dim_name and excel_dimensions[first_dim_name]:
-                    excel_nums = parse_excel_dimension(excel_dimensions[first_dim_name])
-                    is_pass, comparison = compare_numbers(excel_nums, ocr_result['numbers'])
-                    result_status = "✅ PASS" if is_pass else "❌ FAIL"
-                else:
-                    result_status = "⚠️ No dimension"
-                    comparison = "No dimension in Excel"
-                
-                results_list.append({
-                    "STT": idx+1,
-                    "Filename": filename,
-                    "Sản phẩm": product_name,
-                    "Kết quả": result_status,
-                    "Chi tiết": comparison,
-                    "Excel số": str(excel_nums) if first_dim_name else "N/A",
-                    "OCR số": str(ocr_result['numbers']),
-                    "OCR text": ocr_result['raw_text']
-                })
-                status.update(label=f"✅ Xong: {filename} - {result_status}", state="complete")
-            else:
-                results_list.append({
-                    "STT": idx+1,
-                    "Filename": filename,
-                    "Sản phẩm": "N/A",
-                    "Kết quả": "❌ NOT FOUND",
-                    "Chi tiết": "Không tìm thấy trong Excel",
-                    "Excel số": "N/A",
-                    "OCR số": "N/A",
-                    "OCR text": "N/A"
-                })
-                status.update(label=f"❌ Không tìm thấy: {filename}", state="error")
-    
-    # Hiển thị kết quả tổng hợp
-    st.subheader("📊 Bảng kết quả tổng hợp")
-    result_df = pd.DataFrame(results_list)
-    st.dataframe(result_df, use_container_width=True)
-    
-    # Thống kê
-    pass_count = sum(1 for r in results_list if "PASS" in r["Kết quả"])
-    fail_count = sum(1 for r in results_list if "FAIL" in r["Kết quả"])
-    not_found = sum(1 for r in results_list if "NOT FOUND" in r["Kết quả"])
-    
-    st.markdown(f"""
-    ### 📈 Thống kê
-    - ✅ PASS: {pass_count}
-    - ❌ FAIL: {fail_count}
-    - 🔍 Không tìm thấy: {not_found}
-    - 📊 Tổng số: {len(results_list)}
-    """)
-    
-    # Download kết quả
-    csv = result_df.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Tải kết quả (CSV)", data=csv, file_name="ket_qua_qa.csv", mime="text/csv")
-
-else:
-    st.info("👈 Vui lòng upload file Excel và ảnh dim ở sidebar để bắt đầu QA")
-
-st.markdown("---")
-st.caption("QA Ảnh Dim v1.0 - Hỗ trợ nhiều ảnh, tự động bỏ đuôi .jpg")
+            st.dataframe(data, use_container_width=True, hide_index=True)
+        
+        st.divider()
