@@ -1,6 +1,0 @@
-streamlit
-pandas
-easyocr
-pillow
-numpy
-openpyxl
